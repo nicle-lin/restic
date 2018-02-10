@@ -1,0 +1,16 @@
+[
+  {
+    "AliasName" : "default",
+    "DBHost"    : "211.159.185.16:3307",
+    "DBUser"    : "root",
+    "DBPwd"     : "e23456",
+    "DBName"    : "test"
+  },
+  {
+    "AliasName" : "test",
+    "DBHost"    : "211.159.185.16:3307",
+    "DBUser"    : "root",
+    "DBPwd"     : "e23456",
+    "DBName"    : "test"
+  }
+]
