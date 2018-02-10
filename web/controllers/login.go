@@ -11,7 +11,19 @@ func (c *LoginController) Get() {
 	c.Data["Email"] = "astaxie@gmail.com"
 	c.TplName = "login/login.html"
 }
-func (c *LoginController)Post()  {
-	fmt.Println(c.Ctx.Input.RequestBody)
 
+type User struct {
+	Email string
+	Password string
+}
+func (c *LoginController)Post()  {
+	var u User
+	if err := c.ParseForm(&u); err != nil{
+		panic(err)
+	}
+	c.Data["Password"] = u.Password
+	c.Data["Email"] = u.Email
+	c.TplName = "login/login.html"
+	fmt.Println(u.Email)
+	c.RenderString()
 }

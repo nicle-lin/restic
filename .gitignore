@@ -1,6 +1,6 @@
 /restic
 /.vagrant
 /doc/_build
-web/web
+web/web*
 web/lastupdate.tmp
 .idea/*
