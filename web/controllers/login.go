@@ -1,6 +1,5 @@
 package controllers
 
-import "fmt"
 
 type LoginController struct {
 	BaseController
@@ -13,8 +12,8 @@ func (c *LoginController) Get() {
 }
 
 type User struct {
-	Email string
-	Password string
+	Email string `form:"email"`
+	Password string `form:"password"`
 }
 func (c *LoginController)Post()  {
 	var u User
@@ -23,7 +22,5 @@ func (c *LoginController)Post()  {
 	}
 	c.Data["Password"] = u.Password
 	c.Data["Email"] = u.Email
-	c.TplName = "login/login.html"
-	fmt.Println(u.Email)
-	c.RenderString()
+	c.TplName = "home/home.html"
 }
