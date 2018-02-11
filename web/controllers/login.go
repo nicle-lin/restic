@@ -14,13 +14,20 @@ func (c *LoginController) Get() {
 type User struct {
 	Email string `form:"email"`
 	Password string `form:"password"`
+	RememberMe int64 `form:"remember_me"`
 }
 func (c *LoginController)Post()  {
 	var u User
 	if err := c.ParseForm(&u); err != nil{
 		panic(err)
 	}
-	c.Data["Password"] = u.Password
-	c.Data["Email"] = u.Email
-	c.TplName = "home/home.html"
+	if u.Email != "dghpgyss@163.com" || u.Password != "admin"{
+		c.Abort("501")
+		return
+	}
+
+	c.Ctx.SetCookie("email",u.Email,24*3600, "/")
+	c.Ctx.SetCookie("password",u.Password,24*3600, "/")
+	c.Redirect("/",301) // redirect to home
+	return
 }
