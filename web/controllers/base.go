@@ -14,6 +14,16 @@ type GrantController struct {
 	BaseController
 }
 
+func (c *BaseController)Flash(cc *beego.Controller){
+	flash := beego.ReadFromRequest(cc)
+	_, ok1 := flash.Data["error"]
+	_, ok2 := flash.Data["warning"]
+	_, ok3 := flash.Data["notice"]
+	if ok1 || ok2 || ok3 {
+		cc.Data["Error"] = true
+	}
+}
+
 func(c *BaseController)Prepare(){
 
 }
@@ -38,7 +48,7 @@ func (c *ErrorController) Error501() {
 }
 
 
-func (c *ErrorController) ErrorDb() {
+func (c *ErrorController) ErrorDatabase() {
 	c.Data["content"] = "database is now down"
 	c.TplName = "error/database.html"
 }

@@ -1,14 +1,15 @@
 package controllers
 
+import "github.com/astaxie/beego"
 
 type LoginController struct {
 	BaseController
 }
 
 func (c *LoginController) Get() {
-	c.Data["Website"] = "beego.me"
-	c.Data["Email"] = "astaxie@gmail.com"
+	c.Flash(&c.Controller)
 	c.TplName = "login/login.html"
+	return
 }
 
 type User struct {
@@ -17,12 +18,16 @@ type User struct {
 	RememberMe int64 `form:"remember_me"`
 }
 func (c *LoginController)Post()  {
+	flash := beego.NewFlash()
 	var u User
 	if err := c.ParseForm(&u); err != nil{
 		panic(err)
 	}
 	if u.Email != "dghpgyss@163.com" || u.Password != "admin"{
-		c.Abort("501")
+		//c.Abort("Database")
+		flash.Error("email or password is incorrect")
+		flash.Store(&c.Controller)
+		c.Redirect("/login",301) // redirect to home
 		return
 	}
 
