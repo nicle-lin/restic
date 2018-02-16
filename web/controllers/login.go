@@ -27,12 +27,12 @@ func (c *LoginController)Post()  {
 		//c.Abort("Database")
 		flash.Error("email or password is incorrect")
 		flash.Store(&c.Controller)
-		c.Redirect("/login",301) // redirect to home
+		c.Redirect("/",301) // redirect to home
 		return
 	}
 
 	c.Ctx.SetCookie("email",u.Email,24*3600, "/")
 	c.Ctx.SetCookie("password",u.Password,24*3600, "/")
-	c.Redirect("/",301) // redirect to home
+	c.Redirect("/home",301) // redirect to home
 	return
 }

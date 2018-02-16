@@ -16,11 +16,20 @@ type GrantController struct {
 
 func (c *BaseController)Flash(cc *beego.Controller){
 	flash := beego.ReadFromRequest(cc)
-	_, ok1 := flash.Data["error"]
-	_, ok2 := flash.Data["warning"]
-	_, ok3 := flash.Data["notice"]
-	if ok1 || ok2 || ok3 {
-		cc.Data["Error"] = true
+	v, ok := flash.Data["error"]
+	if ok{
+		cc.Data["FlashError"] = true
+		return
+	}
+	v, ok = flash.Data["warning"]
+	if ok{
+		cc.Data["FlashWarning"] = v
+		return
+	}
+	v, ok = flash.Data["notice"]
+	if ok{
+		cc.Data["FlashNotice"] = v
+		return
 	}
 }
 

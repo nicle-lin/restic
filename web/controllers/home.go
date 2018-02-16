@@ -6,11 +6,9 @@ type HomeController struct {
 }
 
 func (c *HomeController) Get() {
-	c.Data["Website"] = "beego.me"
-	c.Data["Email"] = "astaxie@gmail.com"
-	c.Data["Password"] = "test"
 	c.TplName = "home/home.html"
 }
 
 func (c *HomeController)Post()  {
+	c.TplName = "home/home.html"
 }
