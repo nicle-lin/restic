@@ -1,13 +1,13 @@
 {{if .FlashWarning}}
-<div class="h4 mb-3 font-weight-normal alert alert-warning">
+<div class="h6 mb-auto font-weight-normal alert alert-warning">
 {{.flash.warning}}
 </div>
 {{else if .FlashError}}
-<div class="h4 mb-3 font-weight-normal alert alert-danger">
+<div class="h6 mb-auto font-weight-normal alert alert-danger">
 {{.flash.error}}
 </div>
 {{else if .FlashNotice}}
-<div class="h4 mb-3 font-weight-normal alert alert-info">
+<div class="h6 mb-auto font-weight-normal alert alert-info">
 {{.flash.notice}}
 </div>
 {{end}}
