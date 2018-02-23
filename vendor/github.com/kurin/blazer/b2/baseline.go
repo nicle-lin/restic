@@ -46,6 +46,7 @@ type b2BucketInterface interface {
 	startLargeFile(ctx context.Context, name, contentType string, info map[string]string) (b2LargeFileInterface, error)
 	listFileNames(context.Context, int, string, string, string) ([]b2FileInterface, string, error)
 	listFileVersions(context.Context, int, string, string, string, string) ([]b2FileInterface, string, string, error)
+	listUnfinishedLargeFiles(context.Context, int, string) ([]b2FileInterface, string, error)
 	downloadFileByName(context.Context, string, int64, int64) (b2FileReaderInterface, error)
 	hideFile(context.Context, string) (b2FileInterface, error)
 	getDownloadAuthorization(context.Context, string, time.Duration) (string, error)
@@ -137,9 +138,11 @@ func (b *b2Root) authorizeAccount(ctx context.Context, account, key string, opts
 		f(c)
 	}
 	var aopts []base.AuthOption
+	ct := &clientTransport{client: c.client}
 	if c.transport != nil {
-		aopts = append(aopts, base.Transport(c.transport))
+		ct.rt = c.transport
 	}
+	aopts = append(aopts, base.Transport(ct))
 	if c.failSomeUploads {
 		aopts = append(aopts, base.FailSomeUploads())
 	}
@@ -312,6 +315,18 @@ func (b *b2Bucket) listFileVersions(ctx context.Context, count int, nextName, ne
 		files = append(files, &b2File{f})
 	}
 	return files, name, id, nil
+}
+
+func (b *b2Bucket) listUnfinishedLargeFiles(ctx context.Context, count int, continuation string) ([]b2FileInterface, string, error) {
+	fs, cont, err := b.b.ListUnfinishedLargeFiles(ctx, count, continuation)
+	if err != nil {
+		return nil, "", err
+	}
+	var files []b2FileInterface
+	for _, f := range fs {
+		files = append(files, &b2File{f})
+	}
+	return files, cont, nil
 }
 
 func (b *b2Bucket) downloadFileByName(ctx context.Context, name string, offset, size int64) (b2FileReaderInterface, error) {

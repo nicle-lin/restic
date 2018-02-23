@@ -120,8 +120,12 @@ func pruneRepository(gopts GlobalOptions, repo restic.Repository) error {
 	}
 
 	Verbosef("counting files in repo\n")
-	for range repo.List(ctx, restic.DataFile) {
+	err = repo.List(ctx, restic.DataFile, func(restic.ID, int64) error {
 		stats.packs++
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	Verbosef("building new index for repo\n")
@@ -182,7 +186,7 @@ func pruneRepository(gopts GlobalOptions, repo restic.Repository) error {
 	bar = newProgressMax(!gopts.Quiet, uint64(len(snapshots)), "snapshots")
 	bar.Start()
 	for _, sn := range snapshots {
-		debug.Log("process snapshot %v", sn.ID().Str())
+		debug.Log("process snapshot %v", sn.ID())
 
 		err = restic.FindUsedBlobs(ctx, repo, *sn.Tree, usedBlobs, seenBlobs)
 		if err != nil {
@@ -193,7 +197,7 @@ func pruneRepository(gopts GlobalOptions, repo restic.Repository) error {
 			return err
 		}
 
-		debug.Log("processed snapshot %v", sn.ID().Str())
+		debug.Log("processed snapshot %v", sn.ID())
 		bar.Report(restic.Stat{Blobs: 1})
 	}
 	bar.Done()

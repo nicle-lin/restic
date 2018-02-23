@@ -26,6 +26,8 @@ type SnapshotsDir struct {
 	tag     string
 	host    string
 	snCount int
+
+	template string
 }
 
 // SnapshotsIDSDir is a fuse directory which contains snapshots named by ids.
@@ -112,12 +114,13 @@ func updateSnapshotIDSNames(d *SnapshotsIDSDir) {
 func NewSnapshotsDir(root *Root, inode uint64, tag string, host string) *SnapshotsDir {
 	debug.Log("create snapshots dir, inode %d", inode)
 	d := &SnapshotsDir{
-		root:   root,
-		inode:  inode,
-		names:  make(map[string]*restic.Snapshot),
-		latest: "",
-		tag:    tag,
-		host:   host,
+		root:     root,
+		inode:    inode,
+		names:    make(map[string]*restic.Snapshot),
+		latest:   "",
+		tag:      tag,
+		host:     host,
+		template: root.cfg.SnapshotTemplate,
 	}
 
 	return d
@@ -224,22 +227,28 @@ func isElem(e string, list []string) bool {
 const minSnapshotsReloadTime = 60 * time.Second
 
 // update snapshots if repository has changed
-func updateSnapshots(ctx context.Context, root *Root) {
+func updateSnapshots(ctx context.Context, root *Root) error {
 	if time.Since(root.lastCheck) < minSnapshotsReloadTime {
-		return
+		return nil
 	}
 
-	snapshots := restic.FindFilteredSnapshots(ctx, root.repo, root.cfg.Host, root.cfg.Tags, root.cfg.Paths)
+	snapshots, err := restic.FindFilteredSnapshots(ctx, root.repo, root.cfg.Host, root.cfg.Tags, root.cfg.Paths)
+	if err != nil {
+		return err
+	}
+
 	if root.snCount != len(snapshots) {
 		root.snCount = len(snapshots)
 		root.repo.LoadIndex(ctx)
 		root.snapshots = snapshots
 	}
 	root.lastCheck = time.Now()
+
+	return nil
 }
 
 // read snapshot timestamps from the current repository-state.
-func updateSnapshotNames(d *SnapshotsDir) {
+func updateSnapshotNames(d *SnapshotsDir, template string) {
 	if d.snCount != d.root.snCount {
 		d.snCount = d.root.snCount
 		var latestTime time.Time
@@ -248,7 +257,7 @@ func updateSnapshotNames(d *SnapshotsDir) {
 		for _, sn := range d.root.snapshots {
 			if d.tag == "" || isElem(d.tag, sn.Tags) {
 				if d.host == "" || d.host == sn.Hostname {
-					name := sn.Time.Format(time.RFC3339)
+					name := sn.Time.Format(template)
 					if d.latest == "" || !sn.Time.Before(latestTime) {
 						latestTime = sn.Time
 						d.latest = name
@@ -258,7 +267,7 @@ func updateSnapshotNames(d *SnapshotsDir) {
 							break
 						}
 
-						name = fmt.Sprintf("%s-%d", sn.Time.Format(time.RFC3339), i)
+						name = fmt.Sprintf("%s-%d", sn.Time.Format(template), i)
 					}
 
 					d.names[name] = sn
@@ -276,7 +285,7 @@ func (d *SnapshotsDir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 	updateSnapshots(ctx, d.root)
 
 	// update snapshot names
-	updateSnapshotNames(d)
+	updateSnapshotNames(d, d.root.cfg.SnapshotTemplate)
 
 	items := []fuse.Dirent{
 		{
@@ -450,7 +459,7 @@ func (d *SnapshotsDir) Lookup(ctx context.Context, name string) (fs.Node, error)
 		updateSnapshots(ctx, d.root)
 
 		// update snapshot names
-		updateSnapshotNames(d)
+		updateSnapshotNames(d, d.root.cfg.SnapshotTemplate)
 
 		sn, ok := d.names[name]
 		if ok {

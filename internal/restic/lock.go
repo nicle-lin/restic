@@ -157,15 +157,14 @@ func (l *Lock) checkForOtherLocks(ctx context.Context) error {
 }
 
 func eachLock(ctx context.Context, repo Repository, f func(ID, *Lock, error) error) error {
-	for id := range repo.List(ctx, LockFile) {
+	return repo.List(ctx, LockFile, func(id ID, size int64) error {
 		lock, err := LoadLock(ctx, repo, id)
-		err = f(id, lock, err)
 		if err != nil {
 			return err
 		}
-	}
 
-	return nil
+		return f(id, lock, err)
+	})
 }
 
 // createLock acquires the lock by creating a file in the repository.
@@ -226,7 +225,7 @@ func (l *Lock) Stale() bool {
 // Refresh refreshes the lock by creating a new file in the backend with a new
 // timestamp. Afterwards the old lock is removed.
 func (l *Lock) Refresh(ctx context.Context) error {
-	debug.Log("refreshing lock %v", l.lockID.Str())
+	debug.Log("refreshing lock %v", l.lockID)
 	id, err := l.createLock(ctx)
 	if err != nil {
 		return err
@@ -237,7 +236,7 @@ func (l *Lock) Refresh(ctx context.Context) error {
 		return err
 	}
 
-	debug.Log("new lock ID %v", id.Str())
+	debug.Log("new lock ID %v", id)
 	l.lockID = &id
 
 	return nil

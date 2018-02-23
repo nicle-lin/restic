@@ -49,23 +49,21 @@ func New(ctx context.Context, repo restic.Repository, ignorePacks restic.IDSet, 
 	for job := range ch {
 		p.Report(restic.Stat{Blobs: 1})
 
-		packID := job.Data.(restic.ID)
+		j := job.Result.(list.Result)
 		if job.Error != nil {
 			cause := errors.Cause(job.Error)
 			if _, ok := cause.(pack.InvalidFileError); ok {
-				invalidFiles = append(invalidFiles, packID)
+				invalidFiles = append(invalidFiles, j.PackID())
 				continue
 			}
 
-			fmt.Fprintf(os.Stderr, "pack file cannot be listed %v: %v\n", packID.Str(), job.Error)
+			fmt.Fprintf(os.Stderr, "pack file cannot be listed %v: %v\n", j.PackID(), job.Error)
 			continue
 		}
 
-		j := job.Result.(list.Result)
+		debug.Log("pack %v contains %d blobs", j.PackID(), len(j.Entries()))
 
-		debug.Log("pack %v contains %d blobs", packID.Str(), len(j.Entries()))
-
-		err := idx.AddPack(packID, j.Size(), j.Entries())
+		err := idx.AddPack(j.PackID(), j.Size(), j.Entries())
 		if err != nil {
 			return nil, nil, err
 		}
@@ -87,12 +85,12 @@ type blobJSON struct {
 }
 
 type indexJSON struct {
-	Supersedes restic.IDs  `json:"supersedes,omitempty"`
-	Packs      []*packJSON `json:"packs"`
+	Supersedes restic.IDs `json:"supersedes,omitempty"`
+	Packs      []packJSON `json:"packs"`
 }
 
 func loadIndexJSON(ctx context.Context, repo restic.Repository, id restic.ID) (*indexJSON, error) {
-	debug.Log("process index %v\n", id.Str())
+	debug.Log("process index %v\n", id)
 
 	var idx indexJSON
 	err := repo.LoadJSONUnpacked(ctx, restic.IndexFile, id, &idx)
@@ -115,19 +113,19 @@ func Load(ctx context.Context, repo restic.Repository, p *restic.Progress) (*Ind
 
 	index := newIndex()
 
-	for id := range repo.List(ctx, restic.IndexFile) {
+	err := repo.List(ctx, restic.IndexFile, func(id restic.ID, size int64) error {
 		p.Report(restic.Stat{Blobs: 1})
 
-		debug.Log("Load index %v", id.Str())
+		debug.Log("Load index %v", id)
 		idx, err := loadIndexJSON(ctx, repo, id)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		res := make(map[restic.ID]Pack)
 		supersedes[id] = restic.NewIDSet()
 		for _, sid := range idx.Supersedes {
-			debug.Log("  index %v supersedes %v", id.Str(), sid)
+			debug.Log("  index %v supersedes %v", id, sid)
 			supersedes[id].Insert(sid)
 		}
 
@@ -144,12 +142,18 @@ func Load(ctx context.Context, repo restic.Repository, p *restic.Progress) (*Ind
 			}
 
 			if err = index.AddPack(jpack.ID, 0, entries); err != nil {
-				return nil, err
+				return err
 			}
 		}
 
 		results[id] = res
 		index.IndexIDs.Insert(id)
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
 	}
 
 	for superID, list := range supersedes {
@@ -157,7 +161,7 @@ func Load(ctx context.Context, repo restic.Repository, p *restic.Progress) (*Ind
 			if _, ok := results[indexID]; !ok {
 				continue
 			}
-			debug.Log("  removing index %v, superseded by %v", indexID.Str(), superID.Str())
+			debug.Log("  removing index %v, superseded by %v", indexID, superID)
 			fmt.Fprintf(os.Stderr, "index %v can be removed, superseded by index %v\n", indexID.Str(), superID.Str())
 			delete(results, indexID)
 		}
@@ -253,26 +257,24 @@ func (idx *Index) FindBlob(h restic.BlobHandle) (result []Location, err error) {
 	return result, nil
 }
 
+const maxEntries = 3000
+
 // Save writes the complete index to the repo.
-func (idx *Index) Save(ctx context.Context, repo restic.Repository, supersedes restic.IDs) (restic.ID, error) {
-	packs := make(map[restic.ID][]restic.Blob, len(idx.Packs))
-	for id, p := range idx.Packs {
-		packs[id] = p.Entries
-	}
+func (idx *Index) Save(ctx context.Context, repo restic.Repository, supersedes restic.IDs) (restic.IDs, error) {
+	debug.Log("pack files: %d\n", len(idx.Packs))
 
-	return Save(ctx, repo, packs, supersedes)
-}
+	var indexIDs []restic.ID
 
-// Save writes a new index containing the given packs.
-func Save(ctx context.Context, repo restic.Repository, packs map[restic.ID][]restic.Blob, supersedes restic.IDs) (restic.ID, error) {
-	idx := &indexJSON{
+	packs := 0
+	jsonIDX := &indexJSON{
 		Supersedes: supersedes,
-		Packs:      make([]*packJSON, 0, len(packs)),
+		Packs:      make([]packJSON, 0, maxEntries),
 	}
 
-	for packID, blobs := range packs {
-		b := make([]blobJSON, 0, len(blobs))
-		for _, blob := range blobs {
+	for packID, pack := range idx.Packs {
+		debug.Log("%04d add pack %v with %d entries", packs, packID, len(pack.Entries))
+		b := make([]blobJSON, 0, len(pack.Entries))
+		for _, blob := range pack.Entries {
 			b = append(b, blobJSON{
 				ID:     blob.ID,
 				Type:   blob.Type,
@@ -281,13 +283,35 @@ func Save(ctx context.Context, repo restic.Repository, packs map[restic.ID][]res
 			})
 		}
 
-		p := &packJSON{
+		p := packJSON{
 			ID:    packID,
 			Blobs: b,
 		}
 
-		idx.Packs = append(idx.Packs, p)
+		jsonIDX.Packs = append(jsonIDX.Packs, p)
+
+		packs++
+		if packs == maxEntries {
+			id, err := repo.SaveJSONUnpacked(ctx, restic.IndexFile, jsonIDX)
+			if err != nil {
+				return nil, err
+			}
+			debug.Log("saved new index as %v", id)
+
+			indexIDs = append(indexIDs, id)
+			packs = 0
+			jsonIDX.Packs = jsonIDX.Packs[:0]
+		}
 	}
 
-	return repo.SaveJSONUnpacked(ctx, restic.IndexFile, idx)
+	if packs > 0 {
+		id, err := repo.SaveJSONUnpacked(ctx, restic.IndexFile, jsonIDX)
+		if err != nil {
+			return nil, err
+		}
+		debug.Log("saved new index as %v", id)
+		indexIDs = append(indexIDs, id)
+	}
+
+	return indexIDs, nil
 }

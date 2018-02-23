@@ -35,11 +35,17 @@ func testRead(t testing.TB, f *file, offset, length int, data []byte) {
 }
 
 func firstSnapshotID(t testing.TB, repo restic.Repository) (first restic.ID) {
-	for id := range repo.List(context.TODO(), restic.SnapshotFile) {
+	err := repo.List(context.TODO(), restic.SnapshotFile, func(id restic.ID, size int64) error {
 		if first.IsNull() {
 			first = id
 		}
+		return nil
+	})
+
+	if err != nil {
+		t.Fatal(err)
 	}
+
 	return first
 }
 
@@ -81,8 +87,8 @@ func TestFuseFile(t *testing.T) {
 		memfile  []byte
 	)
 	for _, id := range content {
-		size, err := repo.LookupBlobSize(id, restic.DataBlob)
-		rtest.OK(t, err)
+		size, found := repo.LookupBlobSize(id, restic.DataBlob)
+		rtest.Assert(t, found, "Expected to find blob id %v", id)
 		filesize += uint64(size)
 
 		buf := restic.NewBlobBuffer(int(size))

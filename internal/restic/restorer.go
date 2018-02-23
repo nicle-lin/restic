@@ -42,10 +42,10 @@ func NewRestorer(repo Repository, id ID) (*Restorer, error) {
 // restoreTo restores a tree from the repo to a destination. target is the path in
 // the file system, location within the snapshot.
 func (res *Restorer) restoreTo(ctx context.Context, target, location string, treeID ID, idx *HardlinkIndex) error {
-	debug.Log("%v %v %v", target, location, treeID.Str())
+	debug.Log("%v %v %v", target, location, treeID)
 	tree, err := res.repo.LoadTree(ctx, treeID)
 	if err != nil {
-		debug.Log("error loading tree %v: %v", treeID.Str(), err)
+		debug.Log("error loading tree %v: %v", treeID, err)
 		return res.Error(location, nil, err)
 	}
 
@@ -79,13 +79,6 @@ func (res *Restorer) restoreTo(ctx context.Context, target, location string, tre
 		selectedForRestore, childMayBeSelected := res.SelectFilter(nodeLocation, nodeTarget, node)
 		debug.Log("SelectFilter returned %v %v", selectedForRestore, childMayBeSelected)
 
-		if selectedForRestore {
-			err = res.restoreNodeTo(ctx, node, nodeTarget, nodeLocation, idx)
-			if err != nil {
-				return err
-			}
-		}
-
 		if node.Type == "dir" && childMayBeSelected {
 			if node.Subtree == nil {
 				return errors.Errorf("Dir without subtree in tree %v", treeID.Str())
@@ -98,14 +91,19 @@ func (res *Restorer) restoreTo(ctx context.Context, target, location string, tre
 					return err
 				}
 			}
+		}
 
-			if selectedForRestore {
-				// Restore directory timestamp at the end. If we would do it earlier, restoring files within
-				// the directory would overwrite the timestamp of the directory they are in.
-				err = node.RestoreTimestamps(nodeTarget)
-				if err != nil {
-					return err
-				}
+		if selectedForRestore {
+			err = res.restoreNodeTo(ctx, node, nodeTarget, nodeLocation, idx)
+			if err != nil {
+				return err
+			}
+
+			// Restore directory timestamp at the end. If we would do it earlier, restoring files within
+			// the directory would overwrite the timestamp of the directory they are in.
+			err = node.RestoreTimestamps(nodeTarget)
+			if err != nil {
+				return err
 			}
 		}
 	}

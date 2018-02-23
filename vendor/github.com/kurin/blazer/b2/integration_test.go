@@ -17,7 +17,9 @@ package b2
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -786,6 +788,62 @@ func TestAttrsNoRoundtrip(t *testing.T) {
 	}
 }
 
+/*func TestAttrsFewRoundtrips(t *testing.T) {
+	rt := &rtCounter{rt: defaultTransport}
+	defaultTransport = rt
+	defer func() {
+		defaultTransport = rt.rt
+	}()
+
+	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	bucket, done := startLiveTest(ctx, t)
+	defer done()
+
+	_, _, err := writeFile(ctx, bucket, smallFileName, 42, 1e8)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	o := bucket.Object(smallFileName)
+	trips := rt.trips
+	attrs, err := o.Attrs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attrs.Name != smallFileName {
+		t.Errorf("got the wrong object: got %q, want %q", attrs.Name, smallFileName)
+	}
+
+	if trips != rt.trips {
+		t.Errorf("Attrs(): too many round trips, got %d, want 1", rt.trips-trips)
+	}
+}*/
+
+func TestSmallUploadsFewRoundtrips(t *testing.T) {
+	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	bucket, done := startLiveTest(ctx, t)
+	defer done()
+
+	for i := 0; i < 10; i++ {
+		_, _, err := writeFile(ctx, bucket, fmt.Sprintf("%s.%d", smallFileName, i), 42, 1e8)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	si := bucket.c.Status()
+	getURL := si.MethodCalls["b2_get_upload_url"]
+	uploadFile := si.MethodCalls["b2_upload_file"]
+	if getURL >= uploadFile {
+		t.Errorf("too many calls to b2_get_upload_url")
+	}
+}
+
 func TestDeleteWithoutName(t *testing.T) {
 	ctx := context.Background()
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
@@ -801,6 +859,26 @@ func TestDeleteWithoutName(t *testing.T) {
 
 	if err := bucket.Object(smallFileName).Delete(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestListUnfinishedLargeFiles(t *testing.T) {
+	ctx := context.Background()
+	bucket, done := startLiveTest(ctx, t)
+	defer done()
+
+	w := bucket.Object(largeFileName).NewWriter(ctx)
+	w.ChunkSize = 1e5
+	if _, err := io.Copy(w, io.LimitReader(zReader{}, 1e6)); err != nil {
+		t.Fatal(err)
+	}
+	// Don't close the writer.
+	fs, _, err := bucket.ListUnfinishedLargeFiles(ctx, 10, nil)
+	if err != io.EOF && err != nil {
+		t.Fatal(err)
+	}
+	if len(fs) != 1 {
+		t.Errorf("ListUnfinishedLargeFiles: got %d, want 1", len(fs))
 	}
 }
 
@@ -914,6 +992,16 @@ func (cc *ccRC) Close() error {
 	return cc.ReadCloser.Close()
 }
 
+var uniq string
+
+func init() {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	uniq = hex.EncodeToString(b)
+}
+
 func startLiveTest(ctx context.Context, t *testing.T) (*Bucket, func()) {
 	id := os.Getenv(apiID)
 	key := os.Getenv(apiKey)
@@ -929,7 +1017,7 @@ func startLiveTest(ctx context.Context, t *testing.T) (*Bucket, func()) {
 		t.Fatal(err)
 		return nil, nil
 	}
-	bucket, err := client.NewBucket(ctx, id+"-"+bucketName, nil)
+	bucket, err := client.NewBucket(ctx, fmt.Sprintf("%s-%s-%s", id, bucketName, uniq), nil)
 	if err != nil {
 		t.Fatal(err)
 		return nil, nil

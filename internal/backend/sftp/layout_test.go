@@ -46,7 +46,7 @@ func TestLayout(t *testing.T) {
 				Command: fmt.Sprintf("%q -e", sftpServer),
 				Path:    repo,
 				Layout:  test.layout,
-			}, nil, nil)
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -56,9 +56,10 @@ func TestLayout(t *testing.T) {
 			}
 
 			datafiles := make(map[string]bool)
-			for id := range be.List(context.TODO(), restic.DataFile) {
-				datafiles[id] = false
-			}
+			err = be.List(context.TODO(), restic.DataFile, func(fi restic.FileInfo) error {
+				datafiles[fi.Name] = false
+				return nil
+			})
 
 			if len(datafiles) == 0 {
 				t.Errorf("List() returned zero data files")

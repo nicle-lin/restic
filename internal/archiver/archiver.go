@@ -86,8 +86,7 @@ func (arch *Archiver) isKnownBlob(id restic.ID, t restic.BlobType) bool {
 
 	arch.knownBlobs.Insert(id)
 
-	_, err := arch.repo.Index().Lookup(id, t)
-	if err == nil {
+	if arch.repo.Index().Has(id, t) {
 		return true
 	}
 
@@ -96,20 +95,20 @@ func (arch *Archiver) isKnownBlob(id restic.ID, t restic.BlobType) bool {
 
 // Save stores a blob read from rd in the repository.
 func (arch *Archiver) Save(ctx context.Context, t restic.BlobType, data []byte, id restic.ID) error {
-	debug.Log("Save(%v, %v)\n", t, id.Str())
+	debug.Log("Save(%v, %v)\n", t, id)
 
 	if arch.isKnownBlob(id, restic.DataBlob) {
-		debug.Log("blob %v is known\n", id.Str())
+		debug.Log("blob %v is known\n", id)
 		return nil
 	}
 
 	_, err := arch.repo.SaveBlob(ctx, t, data, id)
 	if err != nil {
-		debug.Log("Save(%v, %v): error %v\n", t, id.Str(), err)
+		debug.Log("Save(%v, %v): error %v\n", t, id, err)
 		return err
 	}
 
-	debug.Log("Save(%v, %v): new blob\n", t, id.Str())
+	debug.Log("Save(%v, %v): new blob\n", t, id)
 	return nil
 }
 
@@ -171,7 +170,7 @@ func (arch *Archiver) saveChunk(ctx context.Context, chunk chunker.Chunk, p *res
 	err := arch.Save(ctx, restic.DataBlob, chunk.Data, id)
 	// TODO handle error
 	if err != nil {
-		debug.Log("Save(%v) failed: %v", id.Str(), err)
+		debug.Log("Save(%v) failed: %v", id, err)
 		fmt.Printf("\nerror while saving data to the repo: %+v\n", err)
 		panic(err)
 	}
@@ -205,7 +204,7 @@ func updateNodeContent(node *restic.Node, results []saveResult) error {
 		node.Content[i] = b.id
 		bytes += b.bytes
 
-		debug.Log("  adding blob %s, %d bytes", b.id.Str(), b.bytes)
+		debug.Log("  adding blob %s, %d bytes", b.id, b.bytes)
 	}
 
 	if bytes != node.Size {
@@ -305,7 +304,7 @@ func (arch *Archiver) fileWorker(ctx context.Context, wg *sync.WaitGroup, p *res
 				contentMissing := false
 				for _, blob := range oldNode.Content {
 					if !arch.repo.Index().Has(blob, restic.DataBlob) {
-						debug.Log("   %v not using old data, %v is missing", e.Path(), blob.Str())
+						debug.Log("   %v not using old data, %v is missing", e.Path(), blob)
 						contentMissing = true
 						break
 					}
@@ -438,7 +437,7 @@ func (arch *Archiver) dirWorker(ctx context.Context, wg *sync.WaitGroup, p *rest
 			if err != nil {
 				panic(err)
 			}
-			debug.Log("save tree for %s: %v", dir.Path(), id.Str())
+			debug.Log("save tree for %s: %v", dir.Path(), id)
 			if id.IsNull() {
 				panic("invalid null subtree restic.ID return from SaveTreeJSON()")
 			}
@@ -621,7 +620,7 @@ func (j archiveJob) Copy() pipe.Job {
 const saveIndexTime = 30 * time.Second
 
 // saveIndexes regularly queries the master index for full indexes and saves them.
-func (arch *Archiver) saveIndexes(ctx context.Context, wg *sync.WaitGroup) {
+func (arch *Archiver) saveIndexes(saveCtx, shutdownCtx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	ticker := time.NewTicker(saveIndexTime)
@@ -629,11 +628,13 @@ func (arch *Archiver) saveIndexes(ctx context.Context, wg *sync.WaitGroup) {
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-saveCtx.Done():
+			return
+		case <-shutdownCtx.Done():
 			return
 		case <-ticker.C:
 			debug.Log("saving full indexes")
-			err := arch.repo.SaveFullIndex(ctx)
+			err := arch.repo.SaveFullIndex(saveCtx)
 			if err != nil {
 				debug.Log("save indexes returned an error: %v", err)
 				fmt.Fprintf(os.Stderr, "error saving preliminary index: %v\n", err)
@@ -749,16 +750,16 @@ func (arch *Archiver) Snapshot(ctx context.Context, p *restic.Progress, paths, t
 
 	// run index saver
 	var wgIndexSaver sync.WaitGroup
-	indexCtx, indexCancel := context.WithCancel(ctx)
+	shutdownCtx, indexShutdown := context.WithCancel(ctx)
 	wgIndexSaver.Add(1)
-	go arch.saveIndexes(indexCtx, &wgIndexSaver)
+	go arch.saveIndexes(ctx, shutdownCtx, &wgIndexSaver)
 
 	// wait for all workers to terminate
 	debug.Log("wait for workers")
 	wg.Wait()
 
 	// stop index saver
-	indexCancel()
+	indexShutdown()
 	wgIndexSaver.Wait()
 
 	debug.Log("workers terminated")
@@ -771,7 +772,7 @@ func (arch *Archiver) Snapshot(ctx context.Context, p *restic.Progress, paths, t
 
 	// receive the top-level tree
 	root := (<-resCh).(*restic.Node)
-	debug.Log("root node received: %v", root.Subtree.Str())
+	debug.Log("root node received: %v", root.Subtree)
 	sn.Tree = root.Subtree
 
 	// load top-level tree again to see if it is empty
@@ -799,7 +800,7 @@ func (arch *Archiver) Snapshot(ctx context.Context, p *restic.Progress, paths, t
 		return nil, restic.ID{}, err
 	}
 
-	debug.Log("saved snapshot %v", id.Str())
+	debug.Log("saved snapshot %v", id)
 
 	return sn, id, nil
 }

@@ -142,9 +142,13 @@ func (be *b2Backend) IsNotExist(err error) bool {
 	return b2.IsNotExist(errors.Cause(err))
 }
 
-// Load returns the data stored in the backend for h at the given offset
-// and saves it in p. Load has the same semantics as io.ReaderAt.
-func (be *b2Backend) Load(ctx context.Context, h restic.Handle, length int, offset int64) (io.ReadCloser, error) {
+// Load runs fn with a reader that yields the contents of the file at h at the
+// given offset.
+func (be *b2Backend) Load(ctx context.Context, h restic.Handle, length int, offset int64, fn func(rd io.Reader) error) error {
+	return backend.DefaultLoad(ctx, h, length, offset, be.openReader, fn)
+}
+
+func (be *b2Backend) openReader(ctx context.Context, h restic.Handle, length int, offset int64) (io.ReadCloser, error) {
 	debug.Log("Load %v, length %v, offset %v from %v", h, length, offset, be.Filename(h))
 	if err := h.Valid(); err != nil {
 		return nil, err
@@ -196,12 +200,6 @@ func (be *b2Backend) Save(ctx context.Context, h restic.Handle, rd io.Reader) er
 	debug.Log("Save %v, name %v", h, name)
 	obj := be.bucket.Object(name)
 
-	_, err := obj.Attrs(ctx)
-	if err == nil {
-		debug.Log("  %v already exists", h)
-		return errors.New("key already exists")
-	}
-
 	w := obj.NewWriter(ctx)
 	n, err := io.Copy(w, rd)
 	debug.Log("  saved %d bytes, err %v", n, err)
@@ -228,7 +226,7 @@ func (be *b2Backend) Stat(ctx context.Context, h restic.Handle) (bi restic.FileI
 		debug.Log("Attrs() err %v", err)
 		return restic.FileInfo{}, errors.Wrap(err, "Stat")
 	}
-	return restic.FileInfo{Size: info.Size}, nil
+	return restic.FileInfo{Size: info.Size, Name: h.Name}, nil
 }
 
 // Test returns true if a blob of the given type and name exists in the backend.
@@ -262,66 +260,80 @@ func (be *b2Backend) Remove(ctx context.Context, h restic.Handle) error {
 // List returns a channel that yields all names of blobs of type t. A
 // goroutine is started for this. If the channel done is closed, sending
 // stops.
-func (be *b2Backend) List(ctx context.Context, t restic.FileType) <-chan string {
+func (be *b2Backend) List(ctx context.Context, t restic.FileType, fn func(restic.FileInfo) error) error {
 	debug.Log("List %v", t)
-	ch := make(chan string)
+
+	prefix, _ := be.Basedir(t)
+	cur := &b2.Cursor{Prefix: prefix}
 
 	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	go func() {
-		defer close(ch)
-		defer cancel()
+	for {
+		be.sem.GetToken()
+		objs, c, err := be.bucket.ListCurrentObjects(ctx, be.listMaxItems, cur)
+		be.sem.ReleaseToken()
 
-		prefix, _ := be.Basedir(t)
-		cur := &b2.Cursor{Prefix: prefix}
-
-		for {
-			be.sem.GetToken()
-			objs, c, err := be.bucket.ListCurrentObjects(ctx, be.listMaxItems, cur)
-			be.sem.ReleaseToken()
-			if err != nil && err != io.EOF {
-				// TODO: return err to caller once err handling in List() is improved
-				debug.Log("List: %v", err)
-				return
-			}
-			debug.Log("returned %v items", len(objs))
-			for _, obj := range objs {
-				// Skip objects returned that do not have the specified prefix.
-				if !strings.HasPrefix(obj.Name(), prefix) {
-					continue
-				}
-
-				m := path.Base(obj.Name())
-				if m == "" {
-					continue
-				}
-
-				select {
-				case ch <- m:
-				case <-ctx.Done():
-					return
-				}
-			}
-			if err == io.EOF {
-				return
-			}
-			cur = c
+		if err != nil && err != io.EOF {
+			debug.Log("List: %v", err)
+			return err
 		}
-	}()
 
-	return ch
+		debug.Log("returned %v items", len(objs))
+		for _, obj := range objs {
+			// Skip objects returned that do not have the specified prefix.
+			if !strings.HasPrefix(obj.Name(), prefix) {
+				continue
+			}
+
+			m := path.Base(obj.Name())
+			if m == "" {
+				continue
+			}
+
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
+			attrs, err := obj.Attrs(ctx)
+			if err != nil {
+				return err
+			}
+
+			fi := restic.FileInfo{
+				Name: m,
+				Size: attrs.Size,
+			}
+
+			err = fn(fi)
+			if err != nil {
+				return err
+			}
+
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+		}
+
+		if err == io.EOF {
+			return ctx.Err()
+		}
+		cur = c
+	}
+
+	return ctx.Err()
 }
 
 // Remove keys for a specified backend type.
 func (be *b2Backend) removeKeys(ctx context.Context, t restic.FileType) error {
 	debug.Log("removeKeys %v", t)
-	for key := range be.List(ctx, t) {
-		err := be.Remove(ctx, restic.Handle{Type: t, Name: key})
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return be.List(ctx, t, func(fi restic.FileInfo) error {
+		return be.Remove(ctx, restic.Handle{Type: t, Name: fi.Name})
+	})
 }
 
 // Delete removes all restic keys in the bucket. It will not remove the bucket itself.

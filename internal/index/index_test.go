@@ -2,7 +2,6 @@ package index
 
 import (
 	"context"
-	"math/rand"
 	"testing"
 	"time"
 
@@ -28,7 +27,7 @@ func createFilledRepo(t testing.TB, snapshots int, dup float32) (restic.Reposito
 }
 
 func validateIndex(t testing.TB, repo restic.Repository, idx *Index) {
-	for id := range repo.List(context.TODO(), restic.DataFile) {
+	err := repo.List(context.TODO(), restic.DataFile, func(id restic.ID, size int64) error {
 		p, ok := idx.Packs[id]
 		if !ok {
 			t.Errorf("pack %v missing from index", id.Str())
@@ -37,6 +36,11 @@ func validateIndex(t testing.TB, repo restic.Repository, idx *Index) {
 		if !p.ID.Equal(id) {
 			t.Errorf("pack %v has invalid ID: want %v, got %v", id.Str(), id, p.ID)
 		}
+		return nil
+	})
+
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -172,12 +176,12 @@ func BenchmarkIndexSave(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		id, err := idx.Save(context.TODO(), repo, nil)
+		ids, err := idx.Save(context.TODO(), repo, nil)
 		if err != nil {
 			b.Fatalf("New() returned error %v", err)
 		}
 
-		b.Logf("saved as %v", id.Str())
+		b.Logf("saved as %v", ids)
 	}
 }
 
@@ -212,69 +216,18 @@ func loadIndex(t testing.TB, repo restic.Repository) *Index {
 	return idx
 }
 
-func TestSave(t *testing.T) {
-	repo, cleanup := createFilledRepo(t, 3, 0)
-	defer cleanup()
-
-	idx := loadIndex(t, repo)
-
-	packs := make(map[restic.ID][]restic.Blob)
-	for id := range idx.Packs {
-		if rand.Float32() < 0.5 {
-			packs[id] = idx.Packs[id].Entries
-		}
-	}
-
-	t.Logf("save %d/%d packs in a new index\n", len(packs), len(idx.Packs))
-
-	id, err := Save(context.TODO(), repo, packs, idx.IndexIDs.List())
-	if err != nil {
-		t.Fatalf("unable to save new index: %v", err)
-	}
-
-	t.Logf("new index saved as %v", id.Str())
-
-	for id := range idx.IndexIDs {
-		t.Logf("remove index %v", id.Str())
-		h := restic.Handle{Type: restic.IndexFile, Name: id.String()}
-		err = repo.Backend().Remove(context.TODO(), h)
-		if err != nil {
-			t.Errorf("error removing index %v: %v", id, err)
-		}
-	}
-
-	idx2 := loadIndex(t, repo)
-	t.Logf("load new index with %d packs", len(idx2.Packs))
-
-	if len(idx2.Packs) != len(packs) {
-		t.Errorf("wrong number of packs in new index, want %d, got %d", len(packs), len(idx2.Packs))
-	}
-
-	for id := range packs {
-		if _, ok := idx2.Packs[id]; !ok {
-			t.Errorf("pack %v is not contained in new index", id.Str())
-		}
-	}
-
-	for id := range idx2.Packs {
-		if _, ok := packs[id]; !ok {
-			t.Errorf("pack %v is not contained in new index", id.Str())
-		}
-	}
-}
-
 func TestIndexSave(t *testing.T) {
 	repo, cleanup := createFilledRepo(t, 3, 0)
 	defer cleanup()
 
 	idx := loadIndex(t, repo)
 
-	id, err := idx.Save(context.TODO(), repo, idx.IndexIDs.List())
+	ids, err := idx.Save(context.TODO(), repo, idx.IndexIDs.List())
 	if err != nil {
 		t.Fatalf("unable to save new index: %v", err)
 	}
 
-	t.Logf("new index saved as %v", id.Str())
+	t.Logf("new index saved as %v", ids)
 
 	for id := range idx.IndexIDs {
 		t.Logf("remove index %v", id.Str())
@@ -297,6 +250,21 @@ func TestIndexSave(t *testing.T) {
 	for _, err := range errs {
 		t.Errorf("checker found error: %v", err)
 	}
+
+	ctx, cancel := context.WithCancel(context.TODO())
+
+	errCh := make(chan error)
+	go checker.Structure(ctx, errCh)
+	i := 0
+	for err := range errCh {
+		t.Errorf("checker returned error: %v", err)
+		i++
+		if i == 10 {
+			t.Errorf("more than 10 errors returned, skipping the rest")
+			cancel()
+			break
+		}
+	}
 }
 
 func TestIndexAddRemovePack(t *testing.T) {
@@ -308,7 +276,14 @@ func TestIndexAddRemovePack(t *testing.T) {
 		t.Fatalf("Load() returned error %v", err)
 	}
 
-	packID := <-repo.List(context.TODO(), restic.DataFile)
+	var packID restic.ID
+	err = repo.List(context.TODO(), restic.DataFile, func(id restic.ID, size int64) error {
+		packID = id
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	t.Logf("selected pack %v", packID.Str())
 

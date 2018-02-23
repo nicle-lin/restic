@@ -115,12 +115,13 @@ func (s *Suite) TestLoad(t *testing.T) {
 	b := s.open(t)
 	defer s.close(t, b)
 
-	rd, err := b.Load(context.TODO(), restic.Handle{}, 0, 0)
+	noop := func(rd io.Reader) error {
+		return nil
+	}
+
+	err := b.Load(context.TODO(), restic.Handle{}, 0, 0, noop)
 	if err == nil {
 		t.Fatalf("Load() did not return an error for invalid handle")
-	}
-	if rd != nil {
-		_ = rd.Close()
 	}
 
 	err = testLoad(b, restic.Handle{Type: restic.DataFile, Name: "foobar"}, 0, 0)
@@ -141,13 +142,19 @@ func (s *Suite) TestLoad(t *testing.T) {
 
 	t.Logf("saved %d bytes as %v", length, handle)
 
-	rd, err = b.Load(context.TODO(), handle, 100, -1)
+	err = b.Load(context.TODO(), handle, 100, -1, noop)
 	if err == nil {
 		t.Fatalf("Load() returned no error for negative offset!")
 	}
 
-	if rd != nil {
-		t.Fatalf("Load() returned a non-nil reader for negative offset!")
+	err = b.Load(context.TODO(), handle, 0, 0, func(rd io.Reader) error {
+		return errors.Errorf("deliberate error")
+	})
+	if err == nil {
+		t.Fatalf("Load() did not propagate consumer error!")
+	}
+	if err.Error() != "deliberate error" {
+		t.Fatalf("Load() did not correctly propagate consumer error!")
 	}
 
 	loadTests := 50
@@ -176,63 +183,38 @@ func (s *Suite) TestLoad(t *testing.T) {
 			d = d[:l]
 		}
 
-		rd, err := b.Load(context.TODO(), handle, getlen, int64(o))
+		var buf []byte
+		err := b.Load(context.TODO(), handle, getlen, int64(o), func(rd io.Reader) (ierr error) {
+			buf, ierr = ioutil.ReadAll(rd)
+			return ierr
+		})
 		if err != nil {
 			t.Logf("Load, l %v, o %v, len(d) %v, getlen %v", l, o, len(d), getlen)
 			t.Errorf("Load(%d, %d) returned unexpected error: %+v", l, o, err)
 			continue
 		}
 
-		buf, err := ioutil.ReadAll(rd)
-		if err != nil {
-			t.Logf("Load, l %v, o %v, len(d) %v, getlen %v", l, o, len(d), getlen)
-			t.Errorf("Load(%d, %d) ReadAll() returned unexpected error: %+v", l, o, err)
-			if err = rd.Close(); err != nil {
-				t.Errorf("Load(%d, %d) rd.Close() returned error: %+v", l, o, err)
-			}
-			continue
-		}
-
 		if l == 0 && len(buf) != len(d) {
 			t.Logf("Load, l %v, o %v, len(d) %v, getlen %v", l, o, len(d), getlen)
 			t.Errorf("Load(%d, %d) wrong number of bytes read: want %d, got %d", l, o, len(d), len(buf))
-			if err = rd.Close(); err != nil {
-				t.Errorf("Load(%d, %d) rd.Close() returned error: %+v", l, o, err)
-			}
 			continue
 		}
 
 		if l > 0 && l <= len(d) && len(buf) != l {
 			t.Logf("Load, l %v, o %v, len(d) %v, getlen %v", l, o, len(d), getlen)
 			t.Errorf("Load(%d, %d) wrong number of bytes read: want %d, got %d", l, o, l, len(buf))
-			if err = rd.Close(); err != nil {
-				t.Errorf("Load(%d, %d) rd.Close() returned error: %+v", l, o, err)
-			}
 			continue
 		}
 
 		if l > len(d) && len(buf) != len(d) {
 			t.Logf("Load, l %v, o %v, len(d) %v, getlen %v", l, o, len(d), getlen)
 			t.Errorf("Load(%d, %d) wrong number of bytes read for overlong read: want %d, got %d", l, o, l, len(buf))
-			if err = rd.Close(); err != nil {
-				t.Errorf("Load(%d, %d) rd.Close() returned error: %+v", l, o, err)
-			}
 			continue
 		}
 
 		if !bytes.Equal(buf, d) {
 			t.Logf("Load, l %v, o %v, len(d) %v, getlen %v", l, o, len(d), getlen)
 			t.Errorf("Load(%d, %d) returned wrong bytes", l, o)
-			if err = rd.Close(); err != nil {
-				t.Errorf("Load(%d, %d) rd.Close() returned error: %+v", l, o, err)
-			}
-			continue
-		}
-
-		err = rd.Close()
-		if err != nil {
-			t.Logf("Load, l %v, o %v, len(d) %v, getlen %v", l, o, len(d), getlen)
-			t.Errorf("Load(%d, %d) rd.Close() returned unexpected error: %+v", l, o, err)
 			continue
 		}
 	}
@@ -249,17 +231,30 @@ func (s *Suite) TestList(t *testing.T) {
 	b := s.open(t)
 	defer s.close(t, b)
 
-	list1 := restic.NewIDSet()
+	// Check that the backend is empty to start with
+	var found []string
+	err := b.List(context.TODO(), restic.DataFile, func(fi restic.FileInfo) error {
+		found = append(found, fi.Name)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("List returned error %v", err)
+	}
+	if found != nil {
+		t.Fatalf("backend not empty at start of test - contains: %v", found)
+	}
+
+	list1 := make(map[restic.ID]int64)
 
 	for i := 0; i < numTestFiles; i++ {
-		data := []byte(fmt.Sprintf("random test blob %v", i))
+		data := test.Random(rand.Int(), rand.Intn(100)+55)
 		id := restic.Hash(data)
 		h := restic.Handle{Type: restic.DataFile, Name: id.String()}
 		err := b.Save(context.TODO(), h, bytes.NewReader(data))
 		if err != nil {
 			t.Fatal(err)
 		}
-		list1.Insert(id)
+		list1[id] = int64(len(data))
 	}
 
 	t.Logf("wrote %v files", len(list1))
@@ -272,7 +267,7 @@ func (s *Suite) TestList(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(fmt.Sprintf("max-%v", test.maxItems), func(t *testing.T) {
-			list2 := restic.NewIDSet()
+			list2 := make(map[restic.ID]int64)
 
 			type setter interface {
 				SetListMaxItems(int)
@@ -283,19 +278,37 @@ func (s *Suite) TestList(t *testing.T) {
 				s.SetListMaxItems(test.maxItems)
 			}
 
-			for name := range b.List(context.TODO(), restic.DataFile) {
-				id, err := restic.ParseID(name)
+			err := b.List(context.TODO(), restic.DataFile, func(fi restic.FileInfo) error {
+				id, err := restic.ParseID(fi.Name)
 				if err != nil {
 					t.Fatal(err)
 				}
-				list2.Insert(id)
+				list2[id] = fi.Size
+				return nil
+			})
+
+			if err != nil {
+				t.Fatalf("List returned error %v", err)
 			}
 
 			t.Logf("loaded %v IDs from backend", len(list2))
 
-			if !list1.Equals(list2) {
-				t.Errorf("lists are not equal, list1 %d entries, list2 %d entries",
-					len(list1), len(list2))
+			for id, size := range list1 {
+				size2, ok := list2[id]
+				if !ok {
+					t.Errorf("id %v not returned by List()", id.Str())
+				}
+
+				if size != size2 {
+					t.Errorf("wrong size for id %v returned: want %v, got %v", id.Str(), size, size2)
+				}
+			}
+
+			for id := range list2 {
+				_, ok := list1[id]
+				if !ok {
+					t.Errorf("extra id %v returned by List()", id.Str())
+				}
 			}
 		})
 	}
@@ -306,7 +319,124 @@ func (s *Suite) TestList(t *testing.T) {
 		handles = append(handles, restic.Handle{Type: restic.DataFile, Name: id.String()})
 	}
 
-	err := s.delayedRemove(t, b, handles...)
+	err = s.delayedRemove(t, b, handles...)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestListCancel tests that the context is respected and the error is returned by List.
+func (s *Suite) TestListCancel(t *testing.T) {
+	seedRand(t)
+
+	numTestFiles := 5
+
+	b := s.open(t)
+	defer s.close(t, b)
+
+	testFiles := make([]restic.Handle, 0, numTestFiles)
+
+	for i := 0; i < numTestFiles; i++ {
+		data := []byte(fmt.Sprintf("random test blob %v", i))
+		id := restic.Hash(data)
+		h := restic.Handle{Type: restic.DataFile, Name: id.String()}
+		err := b.Save(context.TODO(), h, bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		testFiles = append(testFiles, h)
+	}
+
+	t.Run("Cancelled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.TODO())
+		cancel()
+
+		// pass in a cancelled context
+		err := b.List(ctx, restic.DataFile, func(fi restic.FileInfo) error {
+			t.Errorf("got FileInfo %v for cancelled context", fi)
+			return nil
+		})
+
+		if errors.Cause(err) != context.Canceled {
+			t.Fatalf("expected error not found, want %v, got %v", context.Canceled, errors.Cause(err))
+		}
+	})
+
+	t.Run("First", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.TODO())
+		defer cancel()
+
+		i := 0
+		err := b.List(ctx, restic.DataFile, func(fi restic.FileInfo) error {
+			i++
+			// cancel the context on the first file
+			if i == 1 {
+				cancel()
+			}
+			return nil
+		})
+
+		if errors.Cause(err) != context.Canceled {
+			t.Fatalf("expected error not found, want %v, got %v", context.Canceled, err)
+		}
+
+		if i != 1 {
+			t.Fatalf("wrong number of files returned by List, want %v, got %v", 1, i)
+		}
+	})
+
+	t.Run("Last", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.TODO())
+		defer cancel()
+
+		i := 0
+		err := b.List(ctx, restic.DataFile, func(fi restic.FileInfo) error {
+			// cancel the context at the last file
+			i++
+			if i == numTestFiles {
+				cancel()
+			}
+			return nil
+		})
+
+		if errors.Cause(err) != context.Canceled {
+			t.Fatalf("expected error not found, want %v, got %v", context.Canceled, err)
+		}
+
+		if i != numTestFiles {
+			t.Fatalf("wrong number of files returned by List, want %v, got %v", numTestFiles, i)
+		}
+	})
+
+	t.Run("Timeout", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.TODO())
+		defer cancel()
+
+		// rather large timeout, let's try to get at least one item
+		timeout := time.Second
+
+		ctxTimeout, _ := context.WithTimeout(ctx, timeout)
+
+		i := 0
+		// pass in a context with a timeout
+		err := b.List(ctxTimeout, restic.DataFile, func(fi restic.FileInfo) error {
+			i++
+
+			// wait until the context is cancelled
+			<-ctxTimeout.Done()
+			return nil
+		})
+
+		if errors.Cause(err) != context.DeadlineExceeded {
+			t.Fatalf("expected error not found, want %#v, got %#v", context.DeadlineExceeded, err)
+		}
+
+		if i > 2 {
+			t.Fatalf("wrong number of files returned by List, want <= 2, got %v", i)
+		}
+	})
+
+	err := s.delayedRemove(t, b, testFiles...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,8 +496,12 @@ func (s *Suite) TestSave(t *testing.T) {
 		fi, err := b.Stat(context.TODO(), h)
 		test.OK(t, err)
 
+		if fi.Name != h.Name {
+			t.Errorf("Stat() returned wrong name, want %q, got %q", h.Name, fi.Name)
+		}
+
 		if fi.Size != int64(len(data)) {
-			t.Fatalf("Stat() returned different size, want %q, got %d", len(data), fi.Size)
+			t.Errorf("Stat() returned different size, want %q, got %d", len(data), fi.Size)
 		}
 
 		err = b.Remove(context.TODO(), h)
@@ -495,17 +629,10 @@ func store(t testing.TB, b restic.Backend, tpe restic.FileType, data []byte) res
 
 // testLoad loads a blob (but discards its contents).
 func testLoad(b restic.Backend, h restic.Handle, length int, offset int64) error {
-	rd, err := b.Load(context.TODO(), h, 0, 0)
-	if err != nil {
-		return err
-	}
-
-	_, err = io.Copy(ioutil.Discard, rd)
-	cerr := rd.Close()
-	if err == nil {
-		err = cerr
-	}
-	return err
+	return b.Load(context.TODO(), h, 0, 0, func(rd io.Reader) (ierr error) {
+		_, ierr = io.Copy(ioutil.Discard, rd)
+		return ierr
+	})
 }
 
 func (s *Suite) delayedRemove(t testing.TB, be restic.Backend, handles ...restic.Handle) error {
@@ -556,10 +683,16 @@ func delayedList(t testing.TB, b restic.Backend, tpe restic.FileType, max int, m
 	list := restic.NewIDSet()
 	start := time.Now()
 	for i := 0; i < max; i++ {
-		for s := range b.List(context.TODO(), tpe) {
-			id := restic.TestParseID(s)
+		err := b.List(context.TODO(), tpe, func(fi restic.FileInfo) error {
+			id := restic.TestParseID(fi.Name)
 			list.Insert(id)
+			return nil
+		})
+
+		if err != nil {
+			t.Fatal(err)
 		}
+
 		if len(list) < max && time.Since(start) < maxwait {
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -618,31 +751,23 @@ func (s *Suite) TestBackend(t *testing.T) {
 			length := end - start
 
 			buf2 := make([]byte, length)
-			rd, err := b.Load(context.TODO(), h, len(buf2), int64(start))
+			var n int
+			err = b.Load(context.TODO(), h, len(buf2), int64(start), func(rd io.Reader) (ierr error) {
+				n, ierr = io.ReadFull(rd, buf2)
+				return ierr
+			})
 			test.OK(t, err)
-			n, err := io.ReadFull(rd, buf2)
 			test.OK(t, err)
 			test.Equals(t, len(buf2), n)
-
-			remaining, err := io.Copy(ioutil.Discard, rd)
-			test.OK(t, err)
-			test.Equals(t, int64(0), remaining)
-
-			test.OK(t, rd.Close())
-
 			test.Equals(t, ts.data[start:end], string(buf2))
 		}
 
 		// test adding the first file again
 		ts := testStrings[0]
-
-		// create blob
 		h := restic.Handle{Type: tpe, Name: ts.id}
-		err := b.Save(context.TODO(), h, strings.NewReader(ts.data))
-		test.Assert(t, err != nil, "expected error for %v, got %v", h, err)
 
 		// remove and recreate
-		err = s.delayedRemove(t, b, h)
+		err := s.delayedRemove(t, b, h)
 		test.OK(t, err)
 
 		// test that the blob is gone

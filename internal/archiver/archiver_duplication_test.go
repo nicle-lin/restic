@@ -38,13 +38,13 @@ func randomID() restic.ID {
 
 // forgetfulBackend returns a backend that forgets everything.
 func forgetfulBackend() restic.Backend {
-	be := &mock.Backend{}
+	be := mock.NewBackend()
 
 	be.TestFn = func(ctx context.Context, h restic.Handle) (bool, error) {
 		return false, nil
 	}
 
-	be.LoadFn = func(ctx context.Context, h restic.Handle, length int, offset int64) (io.ReadCloser, error) {
+	be.OpenReaderFn = func(ctx context.Context, h restic.Handle, length int, offset int64) (io.ReadCloser, error) {
 		return nil, errors.New("not found")
 	}
 
@@ -60,10 +60,8 @@ func forgetfulBackend() restic.Backend {
 		return nil
 	}
 
-	be.ListFn = func(ctx context.Context, t restic.FileType) <-chan string {
-		ch := make(chan string)
-		close(ch)
-		return ch
+	be.ListFn = func(ctx context.Context, t restic.FileType, fn func(restic.FileInfo) error) error {
+		return nil
 	}
 
 	be.DeleteFn = func(ctx context.Context) error {

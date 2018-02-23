@@ -36,7 +36,7 @@ var _ restic.Backend = &SFTP{}
 
 const defaultLayout = "default"
 
-func startClient(preExec, postExec func(), program string, args ...string) (*SFTP, error) {
+func startClient(program string, args ...string) (*SFTP, error) {
 	debug.Log("start client %v %v", program, args)
 	// Connect to a remote host and request the sftp subsystem via the 'ssh'
 	// command.  This assumes that passwordless login is correctly configured.
@@ -65,17 +65,9 @@ func startClient(preExec, postExec func(), program string, args ...string) (*SFT
 		return nil, errors.Wrap(err, "cmd.StdoutPipe")
 	}
 
-	if preExec != nil {
-		preExec()
-	}
-
-	// start the process
-	if err := cmd.Start(); err != nil {
+	bg, err := startForeground(cmd)
+	if err != nil {
 		return nil, errors.Wrap(err, "cmd.Start")
-	}
-
-	if postExec != nil {
-		postExec()
 	}
 
 	// wait in a different goroutine
@@ -90,6 +82,11 @@ func startClient(preExec, postExec func(), program string, args ...string) (*SFT
 	client, err := sftp.NewClientPipe(rd, wr)
 	if err != nil {
 		return nil, errors.Errorf("unable to start the sftp session, error: %v", err)
+	}
+
+	err = bg()
+	if err != nil {
+		return nil, errors.Wrap(err, "bg")
 	}
 
 	return &SFTP{c: client, cmd: cmd, result: ch}, nil
@@ -111,7 +108,7 @@ func (r *SFTP) clientError() error {
 // Open opens an sftp backend as described by the config by running
 // "ssh" with the appropriate arguments (or cfg.Command, if set). The function
 // preExec is run just before, postExec just after starting a program.
-func Open(cfg Config, preExec, postExec func()) (*SFTP, error) {
+func Open(cfg Config) (*SFTP, error) {
 	debug.Log("open backend with config %#v", cfg)
 
 	cmd, args, err := buildSSHCommand(cfg)
@@ -119,7 +116,7 @@ func Open(cfg Config, preExec, postExec func()) (*SFTP, error) {
 		return nil, err
 	}
 
-	sftp, err := startClient(preExec, postExec, cmd, args...)
+	sftp, err := startClient(cmd, args...)
 	if err != nil {
 		debug.Log("unable to start program: %v", err)
 		return nil, err
@@ -132,46 +129,9 @@ func Open(cfg Config, preExec, postExec func()) (*SFTP, error) {
 
 	debug.Log("layout: %v\n", sftp.Layout)
 
-	if err := sftp.checkDataSubdirs(); err != nil {
-		debug.Log("checkDataSubdirs returned %v", err)
-		return nil, err
-	}
-
 	sftp.Config = cfg
 	sftp.p = cfg.Path
 	return sftp, nil
-}
-
-func (r *SFTP) checkDataSubdirs() error {
-	datadir := r.Dirname(restic.Handle{Type: restic.DataFile})
-
-	// check if all paths for data/ exist
-	entries, err := r.ReadDir(datadir)
-	if r.IsNotExist(err) {
-		return nil
-	}
-
-	if err != nil {
-		return err
-	}
-
-	subdirs := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		subdirs[entry.Name()] = struct{}{}
-	}
-
-	for i := 0; i < 256; i++ {
-		subdir := fmt.Sprintf("%02x", i)
-		if _, ok := subdirs[subdir]; !ok {
-			debug.Log("subdir %v is missing, creating", subdir)
-			err := r.mkdirAll(path.Join(datadir, subdir), backend.Modes.Dir)
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
 }
 
 func (r *SFTP) mkdirAllDataSubdirs() error {
@@ -203,6 +163,8 @@ func (r *SFTP) ReadDir(dir string) ([]os.FileInfo, error) {
 
 // IsNotExist returns true if the error is caused by a not existing file.
 func (r *SFTP) IsNotExist(err error) bool {
+	err = errors.Cause(err)
+
 	if os.IsNotExist(err) {
 		return true
 	}
@@ -239,13 +201,13 @@ func buildSSHCommand(cfg Config) (cmd string, args []string, err error) {
 // Create creates an sftp backend as described by the config by running "ssh"
 // with the appropriate arguments (or cfg.Command, if set). The function
 // preExec is run just before, postExec just after starting a program.
-func Create(cfg Config, preExec, postExec func()) (*SFTP, error) {
+func Create(cfg Config) (*SFTP, error) {
 	cmd, args, err := buildSSHCommand(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	sftp, err := startClient(preExec, postExec, cmd, args...)
+	sftp, err := startClient(cmd, args...)
 	if err != nil {
 		debug.Log("unable to start program: %v", err)
 		return nil, err
@@ -273,7 +235,7 @@ func Create(cfg Config, preExec, postExec func()) (*SFTP, error) {
 	}
 
 	// open backend
-	return Open(cfg, preExec, postExec)
+	return Open(cfg)
 }
 
 // Location returns this backend's location (the directory name).
@@ -334,14 +296,16 @@ func (r *SFTP) Save(ctx context.Context, h restic.Handle, rd io.Reader) (err err
 
 	// create new file
 	f, err := r.c.OpenFile(filename, os.O_CREATE|os.O_EXCL|os.O_WRONLY)
-	if r.IsNotExist(errors.Cause(err)) {
-		// create the locks dir, then try again
-		err = r.mkdirAll(r.Dirname(h), backend.Modes.Dir)
-		if err != nil {
-			return errors.Wrap(err, "MkdirAll")
-		}
 
-		return r.Save(ctx, h, rd)
+	if r.IsNotExist(err) {
+		// error is caused by a missing directory, try to create it
+		mkdirErr := r.mkdirAll(r.Dirname(h), backend.Modes.Dir)
+		if mkdirErr != nil {
+			debug.Log("error creating dir %v: %v", r.Dirname(h), mkdirErr)
+		} else {
+			// try again
+			f, err = r.c.OpenFile(filename, os.O_CREATE|os.O_EXCL|os.O_WRONLY)
+		}
 	}
 
 	if err != nil {
@@ -363,10 +327,13 @@ func (r *SFTP) Save(ctx context.Context, h restic.Handle, rd io.Reader) (err err
 	return errors.Wrap(r.c.Chmod(filename, backend.Modes.File), "Chmod")
 }
 
-// Load returns a reader that yields the contents of the file at h at the
-// given offset. If length is nonzero, only a portion of the file is
-// returned. rd must be closed after use.
-func (r *SFTP) Load(ctx context.Context, h restic.Handle, length int, offset int64) (io.ReadCloser, error) {
+// Load runs fn with a reader that yields the contents of the file at h at the
+// given offset.
+func (r *SFTP) Load(ctx context.Context, h restic.Handle, length int, offset int64, fn func(rd io.Reader) error) error {
+	return backend.DefaultLoad(ctx, h, length, offset, r.openReader, fn)
+}
+
+func (r *SFTP) openReader(ctx context.Context, h restic.Handle, length int, offset int64) (io.ReadCloser, error) {
 	debug.Log("Load %v, length %v, offset %v", h, length, offset)
 	if err := h.Valid(); err != nil {
 		return nil, err
@@ -412,7 +379,7 @@ func (r *SFTP) Stat(ctx context.Context, h restic.Handle) (restic.FileInfo, erro
 		return restic.FileInfo{}, errors.Wrap(err, "Lstat")
 	}
 
-	return restic.FileInfo{Size: fi.Size()}, nil
+	return restic.FileInfo{Size: fi.Size(), Name: h.Name}, nil
 }
 
 // Test returns true if a blob of the given type and name exists in the backend.
@@ -444,47 +411,54 @@ func (r *SFTP) Remove(ctx context.Context, h restic.Handle) error {
 	return r.c.Remove(r.Filename(h))
 }
 
-// List returns a channel that yields all names of blobs of type t. A
-// goroutine is started for this. If the channel done is closed, sending
-// stops.
-func (r *SFTP) List(ctx context.Context, t restic.FileType) <-chan string {
+// List runs fn for each file in the backend which has the type t. When an
+// error occurs (or fn returns an error), List stops and returns it.
+func (r *SFTP) List(ctx context.Context, t restic.FileType, fn func(restic.FileInfo) error) error {
 	debug.Log("List %v", t)
 
-	ch := make(chan string)
-
-	go func() {
-		defer close(ch)
-
-		basedir, subdirs := r.Basedir(t)
-		walker := r.c.Walk(basedir)
-		for walker.Step() {
-			if walker.Err() != nil {
-				continue
-			}
-
-			if walker.Path() == basedir {
-				continue
-			}
-
-			if walker.Stat().IsDir() && !subdirs {
-				walker.SkipDir()
-				continue
-			}
-
-			if !walker.Stat().Mode().IsRegular() {
-				continue
-			}
-
-			select {
-			case ch <- path.Base(walker.Path()):
-			case <-ctx.Done():
-				return
-			}
+	basedir, subdirs := r.Basedir(t)
+	walker := r.c.Walk(basedir)
+	for walker.Step() {
+		if walker.Err() != nil {
+			return walker.Err()
 		}
-	}()
 
-	return ch
+		if walker.Path() == basedir {
+			continue
+		}
 
+		if walker.Stat().IsDir() && !subdirs {
+			walker.SkipDir()
+			continue
+		}
+
+		fi := walker.Stat()
+		if !fi.Mode().IsRegular() {
+			continue
+		}
+
+		debug.Log("send %v\n", path.Base(walker.Path()))
+
+		rfi := restic.FileInfo{
+			Name: path.Base(walker.Path()),
+			Size: fi.Size(),
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		err := fn(rfi)
+		if err != nil {
+			return err
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+
+	return ctx.Err()
 }
 
 var closeTimeout = 2 * time.Second

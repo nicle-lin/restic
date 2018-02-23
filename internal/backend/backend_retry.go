@@ -88,15 +88,11 @@ func (be *RetryBackend) Save(ctx context.Context, h restic.Handle, rd io.Reader)
 // given offset. If length is larger than zero, only a portion of the file
 // is returned. rd must be closed after use. If an error is returned, the
 // ReadCloser must be nil.
-func (be *RetryBackend) Load(ctx context.Context, h restic.Handle, length int, offset int64) (rd io.ReadCloser, err error) {
-	err = be.retry(ctx, fmt.Sprintf("Load(%v, %v, %v)", h, length, offset),
+func (be *RetryBackend) Load(ctx context.Context, h restic.Handle, length int, offset int64, consumer func(rd io.Reader) error) (err error) {
+	return be.retry(ctx, fmt.Sprintf("Load(%v, %v, %v)", h, length, offset),
 		func() error {
-			var innerError error
-			rd, innerError = be.Backend.Load(ctx, h, length, offset)
-
-			return innerError
+			return be.Backend.Load(ctx, h, length, offset, consumer)
 		})
-	return rd, err
 }
 
 // Stat returns information about the File identified by h.
@@ -115,5 +111,30 @@ func (be *RetryBackend) Stat(ctx context.Context, h restic.Handle) (fi restic.Fi
 func (be *RetryBackend) Remove(ctx context.Context, h restic.Handle) (err error) {
 	return be.retry(ctx, fmt.Sprintf("Remove(%v)", h), func() error {
 		return be.Backend.Remove(ctx, h)
+	})
+}
+
+// Test a boolean value whether a File with the name and type exists.
+func (be *RetryBackend) Test(ctx context.Context, h restic.Handle) (exists bool, err error) {
+	err = be.retry(ctx, fmt.Sprintf("Test(%v)", h), func() error {
+		var innerError error
+		exists, innerError = be.Backend.Test(ctx, h)
+
+		return innerError
+	})
+	return exists, err
+}
+
+// List runs fn for each file in the backend which has the type t.
+func (be *RetryBackend) List(ctx context.Context, t restic.FileType, fn func(restic.FileInfo) error) error {
+	listed := make(map[string]struct{})
+	return be.retry(ctx, fmt.Sprintf("List(%v)", t), func() error {
+		return be.Backend.List(ctx, t, func(fi restic.FileInfo) error {
+			if _, ok := listed[fi.Name]; ok {
+				return nil
+			}
+			listed[fi.Name] = struct{}{}
+			return fn(fi)
+		})
 	})
 }

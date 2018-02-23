@@ -23,19 +23,28 @@ type Backend interface {
 	// Save stores the data in the backend under the given handle.
 	Save(ctx context.Context, h Handle, rd io.Reader) error
 
-	// Load returns a reader that yields the contents of the file at h at the
+	// Load runs fn with a reader that yields the contents of the file at h at the
 	// given offset. If length is larger than zero, only a portion of the file
-	// is returned. rd must be closed after use. If an error is returned, the
-	// ReadCloser must be nil.
-	Load(ctx context.Context, h Handle, length int, offset int64) (io.ReadCloser, error)
+	// is read.
+	//
+	// The function fn may be called multiple times during the same Load invocation
+	// and therefore must be idempotent.
+	//
+	// Implementations are encouraged to use backend.DefaultLoad
+	Load(ctx context.Context, h Handle, length int, offset int64, fn func(rd io.Reader) error) error
 
 	// Stat returns information about the File identified by h.
 	Stat(ctx context.Context, h Handle) (FileInfo, error)
 
-	// List returns a channel that yields all names of files of type t in an
-	// arbitrary order. A goroutine is started for this, which is stopped when
-	// ctx is cancelled.
-	List(ctx context.Context, t FileType) <-chan string
+	// List runs fn for each file in the backend which has the type t. When an
+	// error occurs (or fn returns an error), List stops and returns it.
+	//
+	// The function fn is called exactly once for each file during successful
+	// execution and at most once in case of an error.
+	//
+	// The function fn is called in the same Goroutine that List() is called
+	// from.
+	List(ctx context.Context, t FileType, fn func(FileInfo) error) error
 
 	// IsNotExist returns true if the error was caused by a non-existing file
 	// in the backend.
@@ -45,6 +54,8 @@ type Backend interface {
 	Delete(ctx context.Context) error
 }
 
-// FileInfo is returned by Stat() and contains information about a file in the
-// backend.
-type FileInfo struct{ Size int64 }
+// FileInfo is contains information about a file in the backend.
+type FileInfo struct {
+	Size int64
+	Name string
+}

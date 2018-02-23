@@ -1,4 +1,33 @@
-// +build ignore
+// BSD 2-Clause License
+//
+// Copyright (c) 2016-2018, Alexander Neumann <alexander@bumpern.de>
+// All rights reserved.
+//
+// This file has been copied from the repository at:
+// https://github.com/fd0/build-go
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// * Redistributions of source code must retain the above copyright notice, this
+//   list of conditions and the following disclaimer.
+//
+// * Redistributions in binary form must reproduce the above copyright notice,
+//   this list of conditions and the following disclaimer in the documentation
+//   and/or other materials provided with the distribution.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+// +build ignore_build_go
 
 package main
 
@@ -11,8 +40,30 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
+
+// config contains the configuration for the program to build.
+var config = Config{
+	Name:      "restic",                              // name of the program executable and directory
+	Namespace: "github.com/restic/restic",            // subdir of GOPATH, e.g. "github.com/foo/bar"
+	Main:      "github.com/restic/restic/cmd/restic", // package name for the main package
+	Tests: []string{ // tests to run
+		"github.com/restic/restic/internal/...",
+		"github.com/restic/restic/cmd/...",
+	},
+	MinVersion: GoVersion{Major: 1, Minor: 8, Patch: 0}, // minimum Go version supported
+}
+
+// Config configures the build.
+type Config struct {
+	Name       string
+	Namespace  string
+	Main       string
+	Tests      []string
+	MinVersion GoVersion
+}
 
 var (
 	verbose    bool
@@ -20,20 +71,6 @@ var (
 	runTests   bool
 	enableCGO  bool
 )
-
-var config = struct {
-	Name      string
-	Namespace string
-	Main      string
-	Tests     []string
-}{
-	Name:      "restic",                              // name of the program executable and directory
-	Namespace: "github.com/restic/restic",            // subdir of GOPATH, e.g. "github.com/foo/bar"
-	Main:      "github.com/restic/restic/cmd/restic", // package name for the main package
-	Tests: []string{ // tests to run
-		"github.com/restic/restic/internal/...",
-		"github.com/restic/restic/cmd/..."},
-}
 
 // specialDir returns true if the file begins with a special character ('.' or '_').
 func specialDir(name string) bool {
@@ -137,7 +174,6 @@ func copyFile(dst, src string) error {
 	if err != nil {
 		return err
 	}
-	defer fsrc.Close()
 
 	if err = os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		fmt.Printf("MkdirAll(%v)\n", filepath.Dir(dst))
@@ -148,17 +184,28 @@ func copyFile(dst, src string) error {
 	if err != nil {
 		return err
 	}
-	defer fdst.Close()
 
-	_, err = io.Copy(fdst, fsrc)
+	if _, err = io.Copy(fdst, fsrc); err != nil {
+		return err
+	}
+
+	if err == nil {
+		err = fsrc.Close()
+	}
+
+	if err == nil {
+		err = fdst.Close()
+	}
+
 	if err == nil {
 		err = os.Chmod(dst, fi.Mode())
 	}
+
 	if err == nil {
 		err = os.Chtimes(dst, fi.ModTime(), fi.ModTime())
 	}
 
-	return err
+	return nil
 }
 
 // die prints the message with fmt.Fprintf() to stderr and exits with an error
@@ -180,6 +227,7 @@ func showUsage(output io.Writer) {
 	fmt.Fprintf(output, "         --enable-cgo    use CGO to link against libc\n")
 	fmt.Fprintf(output, "         --goos value    set GOOS for cross-compilation\n")
 	fmt.Fprintf(output, "         --goarch value  set GOARCH for cross-compilation\n")
+	fmt.Fprintf(output, "         --goarm value  set GOARM for cross-compilation\n")
 }
 
 func verbosePrintf(message string, args ...interface{}) {
@@ -205,13 +253,16 @@ func cleanEnv() (env []string) {
 }
 
 // build runs "go build args..." with GOPATH set to gopath.
-func build(cwd, goos, goarch, gopath string, args ...string) error {
+func build(cwd, goos, goarch, goarm, gopath string, args ...string) error {
 	a := []string{"build"}
 	a = append(a, "-asmflags", fmt.Sprintf("-trimpath=%s", gopath))
 	a = append(a, "-gcflags", fmt.Sprintf("-trimpath=%s", gopath))
 	a = append(a, args...)
 	cmd := exec.Command("go", a...)
 	cmd.Env = append(cleanEnv(), "GOPATH="+gopath, "GOARCH="+goarch, "GOOS="+goos)
+	if goarm != "" {
+		cmd.Env = append(cmd.Env, "GOARM="+goarm)
+	}
 	if !enableCGO {
 		cmd.Env = append(cmd.Env, "CGO_ENABLED=0")
 	}
@@ -300,10 +351,80 @@ func (cs Constants) LDFlags() string {
 	return strings.Join(l, " ")
 }
 
+// GoVersion is the version of Go used to compile the project.
+type GoVersion struct {
+	Major int
+	Minor int
+	Patch int
+}
+
+// ParseGoVersion parses the Go version s. If s cannot be parsed, the returned GoVersion is null.
+func ParseGoVersion(s string) (v GoVersion) {
+	if !strings.HasPrefix(s, "go") {
+		return
+	}
+
+	s = s[2:]
+	data := strings.Split(s, ".")
+	if len(data) != 3 {
+		return
+	}
+
+	major, err := strconv.Atoi(data[0])
+	if err != nil {
+		return
+	}
+
+	minor, err := strconv.Atoi(data[1])
+	if err != nil {
+		return
+	}
+
+	patch, err := strconv.Atoi(data[2])
+	if err != nil {
+		return
+	}
+
+	v = GoVersion{
+		Major: major,
+		Minor: minor,
+		Patch: patch,
+	}
+	return
+}
+
+// AtLeast returns true if v is at least as new as other. If v is empty, true is returned.
+func (v GoVersion) AtLeast(other GoVersion) bool {
+	var empty GoVersion
+
+	// the empty version satisfies all versions
+	if v == empty {
+		return true
+	}
+
+	if v.Major < other.Major {
+		return false
+	}
+
+	if v.Minor < other.Minor {
+		return false
+	}
+
+	if v.Patch < other.Patch {
+		return false
+	}
+
+	return true
+}
+
+func (v GoVersion) String() string {
+	return fmt.Sprintf("Go %d.%d.%d", v.Major, v.Minor, v.Patch)
+}
+
 func main() {
-	ver := runtime.Version()
-	if strings.HasPrefix(ver, "go1") && ver < "go1.8" {
-		fmt.Fprintf(os.Stderr, "Go version %s detected, restic requires at least Go 1.8\n", ver)
+	ver := ParseGoVersion(runtime.Version())
+	if !ver.AtLeast(config.MinVersion) {
+		fmt.Fprintf(os.Stderr, "%s detected, this program requires at least %s\n", ver, config.MinVersion)
 		os.Exit(1)
 	}
 
@@ -314,6 +435,7 @@ func main() {
 
 	targetGOOS := runtime.GOOS
 	targetGOARCH := runtime.GOARCH
+	targetGOARM := ""
 
 	var outputFilename string
 
@@ -347,6 +469,9 @@ func main() {
 		case "--goarch":
 			skipNext = true
 			targetGOARCH = params[i+1]
+		case "--goarm":
+			skipNext = true
+			targetGOARM = params[i+1]
 		case "-h":
 			showUsage(os.Stdout)
 			return
@@ -431,7 +556,7 @@ func main() {
 		"-o", output, config.Main,
 	}
 
-	err = build(filepath.Join(gopath, "src"), targetGOOS, targetGOARCH, gopath, args...)
+	err = build(filepath.Join(gopath, "src"), targetGOOS, targetGOARCH, targetGOARM, gopath, args...)
 	if err != nil {
 		die("build failed: %v\n", err)
 	}

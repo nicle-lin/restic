@@ -110,7 +110,7 @@ func (idx *Index) Store(blob restic.PackedBlob) {
 }
 
 // Lookup queries the index for the blob ID and returns a restic.PackedBlob.
-func (idx *Index) Lookup(id restic.ID, tpe restic.BlobType) (blobs []restic.PackedBlob, err error) {
+func (idx *Index) Lookup(id restic.ID, tpe restic.BlobType) (blobs []restic.PackedBlob, found bool) {
 	idx.m.Lock()
 	defer idx.m.Unlock()
 
@@ -120,9 +120,6 @@ func (idx *Index) Lookup(id restic.ID, tpe restic.BlobType) (blobs []restic.Pack
 		blobs = make([]restic.PackedBlob, 0, len(packs))
 
 		for _, p := range packs {
-			debug.Log("id %v found in pack %v at %d, length %d",
-				id.Str(), p.packID.Str(), p.offset, p.length)
-
 			blob := restic.PackedBlob{
 				Blob: restic.Blob{
 					Type:   tpe,
@@ -136,11 +133,10 @@ func (idx *Index) Lookup(id restic.ID, tpe restic.BlobType) (blobs []restic.Pack
 			blobs = append(blobs, blob)
 		}
 
-		return blobs, nil
+		return blobs, true
 	}
 
-	debug.Log("id %v not found", id.Str())
-	return nil, errors.Errorf("id %v not found in index", id)
+	return nil, false
 }
 
 // ListPack returns a list of blobs contained in a pack.
@@ -169,23 +165,24 @@ func (idx *Index) ListPack(id restic.ID) (list []restic.PackedBlob) {
 
 // Has returns true iff the id is listed in the index.
 func (idx *Index) Has(id restic.ID, tpe restic.BlobType) bool {
-	_, err := idx.Lookup(id, tpe)
-	if err == nil {
-		return true
-	}
+	idx.m.Lock()
+	defer idx.m.Unlock()
 
-	return false
+	h := restic.BlobHandle{ID: id, Type: tpe}
+
+	_, ok := idx.pack[h]
+	return ok
 }
 
 // LookupSize returns the length of the plaintext content of the blob with the
 // given id.
-func (idx *Index) LookupSize(id restic.ID, tpe restic.BlobType) (plaintextLength uint, err error) {
-	blobs, err := idx.Lookup(id, tpe)
-	if err != nil {
-		return 0, err
+func (idx *Index) LookupSize(id restic.ID, tpe restic.BlobType) (plaintextLength uint, found bool) {
+	blobs, found := idx.Lookup(id, tpe)
+	if !found {
+		return 0, found
 	}
 
-	return uint(restic.PlaintextLength(int(blobs[0].Length))), nil
+	return uint(restic.PlaintextLength(int(blobs[0].Length))), true
 }
 
 // Supersedes returns the list of indexes this index supersedes, if any.
@@ -401,7 +398,7 @@ func (idx *Index) SetID(id restic.ID) error {
 		return errors.New("ID already set")
 	}
 
-	debug.Log("ID set to %v", id.Str())
+	debug.Log("ID set to %v", id)
 	idx.id = id
 
 	return nil
@@ -553,7 +550,7 @@ func DecodeOldIndex(buf []byte) (idx *Index, err error) {
 
 // LoadIndexWithDecoder loads the index and decodes it with fn.
 func LoadIndexWithDecoder(ctx context.Context, repo restic.Repository, id restic.ID, fn func([]byte) (*Index, error)) (idx *Index, err error) {
-	debug.Log("Loading index %v", id.Str())
+	debug.Log("Loading index %v", id)
 
 	buf, err := repo.LoadAndDecrypt(ctx, restic.IndexFile, id)
 	if err != nil {
