@@ -1,6 +1,9 @@
 package controllers
 
-import "github.com/astaxie/beego"
+import (
+	"github.com/astaxie/beego"
+	"github.com/restic/restic/web/models"
+)
 
 type LoginController struct {
 	BaseController
@@ -12,27 +15,29 @@ func (c *LoginController) Get() {
 	return
 }
 
-type User struct {
-	Email string `form:"email"`
-	Password string `form:"password"`
-	RememberMe int64 `form:"remember_me"`
-}
-func (c *LoginController)Post()  {
-	flash := beego.NewFlash()
-	var u User
-	if err := c.ParseForm(&u); err != nil{
+func (c *LoginController) Post() {
+	type Params struct {
+		Email      string `form:"email"`
+		Password   string `form:"password"`
+		RememberMe int64  `form:"remember_me"`
+	}
+	var p Params
+	if err := c.ParseForm(&p); err != nil {
 		panic(err)
 	}
-	if u.Email != "dghpgyss@163.com" || u.Password != "admin"{
+
+	flash := beego.NewFlash()
+	models.UserByEmail(p.Email)
+	if p.Email != "dghpgyss@163.com" || p.Password != "admin" {
 		//c.Abort("Database")
 		flash.Error("email or password is incorrect")
 		flash.Store(&c.Controller)
-		c.Redirect("/",301) // redirect to home
+		c.Redirect("/", 301) // redirect to home
 		return
 	}
 
-	c.Ctx.SetCookie("email",u.Email,24*3600, "/")
-	c.Ctx.SetCookie("password",u.Password,24*3600, "/")
-	c.Redirect("/home",301) // redirect to home
+	c.Ctx.SetCookie("email", p.Email, 24*3600, "/")
+	c.Ctx.SetCookie("password", p.Password, 24*3600, "/")
+	c.Redirect("/home", 301) // redirect to home
 	return
 }
