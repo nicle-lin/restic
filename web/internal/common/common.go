@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"fmt"
+	"crypto/md5"
 )
 
 //返回成功表示有错误
@@ -29,6 +30,13 @@ func IsPathExist(path string) bool {
 		return false
 	}
 	return true
+}
+
+func Md5sum(plaintext string) (ciphertext string) {
+	h := md5.New()
+	h.Write([]byte(plaintext))
+	ciphertext = fmt.Sprintf("%x", h.Sum(nil))
+	return
 }
 
 func Join(a []int64, sep string) string {

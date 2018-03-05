@@ -3,6 +3,7 @@ package models
 import (
 	"fmt"
 	"github.com/astaxie/beego/orm"
+	. "github.com/restic/restic/web/internal/common"
 )
 type User struct {
 	Id int64 `json:"id,omitempty"`
@@ -31,15 +32,21 @@ func UpdateUser(data map[string]interface{}, uid int64, multiOrm ...orm.Ormer) (
 	}
 	return result.RowsAffected()
 }
-func UserByEmail(email string ,multiOrm ...orm.Ormer)(){
+func UserByEmail(email string ,multiOrm ...orm.Ormer)(*User,error){
 	sql := fmt.Sprintf(`
 	SELECT
 		password
 	FROM
 		%v
 	WHERE
-		email = %v
+		email = '%v'
+	LIMIT 1
 	`,TableUser,email)
 	o := NewOrm(multiOrm,DBResitc)
-	o.Raw(sql)
+	var u User
+	err := o.Raw(sql).QueryRow(&u)
+	if CheckNoExist(err){
+		return nil,nil
+	}
+	return &u,err
 }

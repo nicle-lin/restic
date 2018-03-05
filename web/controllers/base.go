@@ -7,6 +7,7 @@ import (
 
 type BaseController struct {
 	beego.Controller
+	flash *beego.FlashData
 }
 
 
@@ -32,9 +33,23 @@ func (c *BaseController)Flash(cc *beego.Controller){
 		return
 	}
 }
+func (c *BaseController)ErrorDatabase(msg string){
+	if beego.BConfig.RunMode == "dev"{
+		c.Data["error"] = msg
+	}else{
+		c.Data["error"] = "数据库异常,请联系我,邮箱:dghpgyss@163.com"
+	}
+	c.Abort("Database")
+}
+
+func (c *BaseController)FlashError(msg string, args ...interface{}){
+	if beego.BConfig.RunMode == "dev"{
+
+	}
+}
 
 func(c *BaseController)Prepare(){
-
+	c.flash = beego.NewFlash()
 }
 
 func(c *BaseController)Finish(){

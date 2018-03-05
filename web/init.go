@@ -1,10 +1,9 @@
 // init database
-package models
+package main
 
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/astaxie/beego"
 	"github.com/astaxie/beego/orm"
 	_ "github.com/go-sql-driver/mysql"
 	"io/ioutil"
@@ -43,13 +42,3 @@ func registerMysqlDB(aliasName, user, password, host string, dbName string) erro
 		fmt.Sprintf("%s:%s@tcp(%s)/%s?charset=utf8&loc=Local", user, password, host, dbName))
 }
 
-func init() {
-	err := InitMysqlDB()
-	if err != nil {
-		panic(err)
-	}
-	if beego.BConfig.RunMode == "dev" {
-		orm.Debug = true
-	}
-
-}

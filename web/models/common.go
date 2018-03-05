@@ -2,10 +2,10 @@ package models
 
 import (
 	"github.com/astaxie/beego/orm"
-	"database/sql"
+//	"database/sql"
 	"fmt"
-	"github.com/arnehormann/sqlinternals/mysqlinternals"
-	"strconv"
+//	"github.com/arnehormann/sqlinternals/mysqlinternals"
+//	"strconv"
 )
 
 func NewOrm(multiOrm []orm.Ormer, db ...string) (o orm.Ormer) {
@@ -82,6 +82,7 @@ func InsertOrUpdateSql(tableName string, data map[string]interface{}) (values []
 	return
 }
 
+/*
 //查询一行数据装到map[string]interface{}里
 func QueryRowToMap(db *sql.DB, sqlStr string) (map[string]interface{}, error) {
 
@@ -162,4 +163,4 @@ func bytes2RealType(src []byte, column mysqlinternals.Column) interface{} {
 	}
 	return result
 }
-
+*/

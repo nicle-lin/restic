@@ -1,8 +1,8 @@
 package controllers
 
 import (
-	"github.com/astaxie/beego"
 	"github.com/restic/restic/web/models"
+	. "github.com/restic/restic/web/internal/common"
 )
 
 type LoginController struct {
@@ -26,13 +26,17 @@ func (c *LoginController) Post() {
 		panic(err)
 	}
 
-	flash := beego.NewFlash()
-	models.UserByEmail(p.Email)
-	if p.Email != "dghpgyss@163.com" || p.Password != "admin" {
-		//c.Abort("Database")
-		flash.Error("email or password is incorrect")
-		flash.Store(&c.Controller)
-		c.Redirect("/", 301) // redirect to home
+
+	u ,err := models.UserByEmail(p.Email)
+	if err != nil{
+		c.ErrorDatabase(err.Error())
+		return
+	}
+	//md5
+	if u== nil ||  Md5sum(p.Password) != u.Password{
+		c.flash.Notice("email or password is incorrect")
+		c.flash.Store(&c.Controller)
+		c.Redirect("/", 301) // redirect to login
 		return
 	}
 
