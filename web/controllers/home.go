@@ -2,7 +2,7 @@ package controllers
 
 
 type HomeController struct {
-	BaseController
+	GrantController
 }
 
 func (c *HomeController) Get() {
