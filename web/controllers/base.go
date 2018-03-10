@@ -50,6 +50,8 @@ func (c *BaseController)FlashError(msg string, args ...interface{}){
 
 func(c *BaseController)Prepare(){
 	c.flash = beego.NewFlash()
+	c.GetSession("email")
+	c.GetSession("password")
 }
 
 func(c *BaseController)Finish(){

@@ -40,10 +40,8 @@ func (c *LoginController) Post() {
 		return
 	}
 
-	//c.Ctx.SetCookie("email", p.Email, 24*3600, "/")
-	//c.Ctx.SetCookie("password", p.Password, 24*3600, "/")
 	c.SetSession("email",u.Email)
-	c.SetSession("password",u.Password)
+	c.SetSession("password",Md5sum(u.Password))
 	c.Redirect("/home", 301) // redirect to home
 	return
 }
